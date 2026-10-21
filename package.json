@@ -1,0 +1,46 @@
+{
+  "name": "pi-workshop",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "description": "Work through a Markdown plan or draft with your Pi agent in the browser: start threads on any passage, talk each one through, and fold the results back into the document.",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "markdown",
+    "review",
+    "collaboration"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MansoorMajeed/pi-workshop.git"
+  },
+  "files": [
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:browser": "WORKSHOP_BROWSER_TESTS=1 vitest run tests/browser.test.ts"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "marked": "^18.1.1",
+    "mermaid": "^12.2.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "vitest": "^4.1.4"
+  }
+}
