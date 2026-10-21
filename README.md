@@ -45,10 +45,6 @@ Then, in the browser:
 - [How the agent takes part](docs/agent-integration.md): the tools, what the agent receives, and how it should behave.
 - [How it works](docs/how-it-works.md): the local server, security, where state is kept, and development.
 
-## Coming from Clawd
-
-This package used to ship inside [Clawd](https://github.com/MansoorMajeed/Clawd) as the "artifact viewer". The command is now `/workshop` and the tools are `workshop_open`, `workshop_comment` and `workshop_reply`. Your existing threads are copied from `~/.pi/agent/artifacts/` the first time you use it.
-
 ## License
 
 Apache-2.0
