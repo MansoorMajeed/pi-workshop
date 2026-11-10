@@ -14,6 +14,10 @@ export interface Block {
 	plain: string;
 	/** Heading path below the document title, e.g. "Tasks › Phase 1" ("" before the first heading). */
 	path: string;
+	/** Exact source of the block, with line endings normalized to LF. */
+	raw: string;
+	/** Offset of `raw` in the source after line endings are normalized to LF (as the Markdown parser sees it). */
+	start: number;
 	/** Raw diagram source, for Mermaid blocks only. */
 	source?: string;
 	kind: BlockKind;
@@ -131,8 +135,13 @@ function renderToken(token: Token): { kind: BlockKind; html: string } {
 	}
 }
 
+/** Top-level Markdown tokens, with the same parser settings the page uses. */
+export function lex(markdown: string): Token[] {
+	return marked.lexer(markdown);
+}
+
 export function renderDocument(markdown: string): RenderedDocument {
-	const tokens = marked.lexer(markdown);
+	const tokens = lex(markdown);
 	const blocks: Block[] = [];
 	const slugCounts = new Map<string, number>();
 	const idCounts = new Map<string, number>();
@@ -140,8 +149,11 @@ export function renderDocument(markdown: string): RenderedDocument {
 	const trail: Array<{ depth: number; text: string }> = [];
 	let firstH1: string | undefined;
 	let firstHeading: string | undefined;
+	let offset = 0;
 
 	for (const token of tokens) {
+		const start = offset;
+		offset += token.raw.length;
 		if (token.type === "space" || token.type === "def") continue;
 		if (token.type === "heading") {
 			const headingToken = token as Tokens.Heading;
@@ -163,7 +175,7 @@ export function renderDocument(markdown: string): RenderedDocument {
 		// The document title adds nothing once there is a subsection to name.
 		const named = trail.length > 1 && trail[0].depth === 1 ? trail.slice(1) : trail;
 		const path = named.map((t) => t.text).join(" › ");
-		const block: Block = { id: seen === 0 ? base : `${base}-${seen + 1}`, heading, text, plain, path, kind, html };
+		const block: Block = { id: seen === 0 ? base : `${base}-${seen + 1}`, heading, text, plain, path, raw: token.raw, start, kind, html };
 		if (kind === "mermaid") block.source = (token as Tokens.Code).text;
 		blocks.push(block);
 	}
