@@ -134,7 +134,7 @@ button, textarea { font: inherit; color: inherit; }
 
 [hidden] { display: none !important; }
 
-.line-add {
+.line-add, .line-edit {
 	position: absolute;
 	left: 34px;
 	z-index: 2;
@@ -150,7 +150,27 @@ button, textarea { font: inherit; color: inherit; }
 	transition: color 120ms ease, border-color 120ms ease;
 }
 
-.line-add:hover { color: var(--accent); border-color: var(--accent); }
+.line-edit { font-size: 14px; }
+.line-add:hover, .line-edit:hover { color: var(--accent); border-color: var(--accent); }
+.block.edit-target > .block-body { outline: 1px dashed var(--accent); outline-offset: 6px; border-radius: 2px; }
+
+.block-editor textarea {
+	display: block;
+	width: 100%;
+	padding: 12px 14px;
+	border: 1px solid var(--accent);
+	border-radius: var(--radius);
+	background: var(--paper-raised);
+	color: inherit;
+	font: 14px/1.6 var(--mono);
+	tab-size: 4;
+	resize: none;
+	overflow: hidden;
+}
+.block-editor textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.block-editor .source-actions { align-items: center; margin-top: 10px; }
+.block-editor .source-help { margin-top: 0; }
+.block-editor-hint { color: var(--muted); font: 12px/1.4 var(--sans); }
 
 .sel-add {
 	position: absolute;
@@ -462,7 +482,7 @@ a.btn { text-decoration: none; color: var(--accent); }
 	}
 	.comment-rail:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 	.comment-rail > .block-comments { flex: none; margin-top: 0; }
-	.line-add { left: 18px; }
+	.line-add, .line-edit { left: 18px; }
 }
 
 /* Narrow screens */
@@ -474,7 +494,7 @@ a.btn { text-decoration: none; color: var(--accent); }
 	.topbar { padding: 10px 24px; flex-wrap: wrap; gap: 10px; }
 	.topbar .path { max-width: calc(100% - 24px); }
 	.source-editor { padding: 28px 24px 80px; }
-	.line-add { left: 8px; }
+	.line-add, .line-edit { left: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

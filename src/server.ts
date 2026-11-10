@@ -519,9 +519,12 @@ export class WorkshopServer {
 
 	private payload(doc: OpenDoc) {
 		if (!existsSync(doc.path)) throw new HttpError(404, `${this.displayPath(doc.path)} no longer exists`);
-		const rendered = renderDocument(readFileSync(doc.path, "utf8"));
+		const source = readFileSync(doc.path, "utf8");
+		const rendered = renderDocument(source);
 		return {
 			path: this.displayPath(doc.path),
+			// From the same read as the blocks, so a block save knows exactly which file the viewer saw.
+			version: createHash("sha256").update(source, "utf8").digest("hex"),
 			title: rendered.title,
 			hasMermaid: rendered.hasMermaid,
 			blocks: rendered.blocks.map(({ id, kind, html, raw }) => ({ id, kind, html, raw })),

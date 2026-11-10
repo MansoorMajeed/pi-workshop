@@ -276,7 +276,9 @@ describe("WorkshopServer", () => {
 		writeFileSync(docPath, original);
 		chmodSync(docPath, 0o640);
 		const { version } = JSON.parse((await call(server.port, `/api/doc/${docId}/source?${q}`)).body);
-		const para = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body).blocks[1];
+		const payload = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body);
+		expect(payload.version).toBe(version);
+		const para = payload.blocks[1];
 		expect(para.raw).toBe("Old\tpara.");
 		// Someone else edits another block after the viewer loaded; the block save still applies on top.
 		writeFileSync(docPath, original.replace("- b", "- b (agent)"));
