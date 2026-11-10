@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attach, type Anchor } from "./anchor";
+import { BlockEditError, replaceBlock } from "./edit";
 import { formatSendMessage } from "./message";
 import { liveEntries, removeEntry, writeEntry, type RegistryEntry } from "./registry";
 import { escapeHtml, normalize, renderDocument } from "./render";
@@ -391,32 +392,29 @@ export class WorkshopServer {
 					if (this.source(doc).version !== body.version) {
 						throw new HttpError(409, "The document changed. Reload the source before saving again.");
 					}
-					// Resolve symlinks so replacement changes their target, not the document link.
-					const target = realpathSync(doc.path);
-					const mode = statSync(target).mode & 0o7777;
-					const temporary = join(dirname(target), `.workshop-${randomBytes(12).toString("hex")}.tmp`);
-					const fd = openSync(temporary, "wx", 0o600);
-					let replaced = false;
-					try {
-						try {
-							writeFileSync(fd, body.source, "utf8");
-							// Creation applies umask; restore the original permissions after writing.
-							fchmodSync(fd, mode);
-						} finally {
-							closeSync(fd);
-						}
-						if (this.source(doc).version !== body.version || realpathSync(doc.path) !== target) {
-							throw new HttpError(409, "The document changed. Reload the source before saving again.");
-						}
-						renameSync(temporary, target);
-						replaced = true;
-					} finally {
-						if (!replaced) unlinkSync(temporary);
-					}
-					this.notify(doc);
-					this.json(res, 200, { version: createHash("sha256").update(body.source, "utf8").digest("hex") });
+					this.json(res, 200, { version: this.write(doc, body.version, body.source, "The document changed. Reload the source before saving again.") });
 					return;
 				}
+			}
+			if (action[0] === "blocks" && action.length === 1 && method === "POST") {
+				const body = await readJson(req, MAX_SOURCE_BODY);
+				if (typeof body.blockId !== "string" || typeof body.source !== "string" || typeof body.version !== "string") {
+					throw new HttpError(400, "Block ID, source and version must be strings");
+				}
+				const current = this.source(doc);
+				// Decoding and re-encoding would replace invalid bytes in parts of the file the user didn't edit.
+				if (!Buffer.from(current.source, "utf8").equals(readFileSync(doc.path))) {
+					throw new HttpError(422, "This file isn't valid UTF-8, so it can't be edited one block at a time.");
+				}
+				let next: string;
+				try {
+					next = replaceBlock(current.source, body.blockId, body.source, { fileChanged: current.version !== body.version });
+				} catch (error) {
+					if (error instanceof BlockEditError) throw new HttpError(error.reason === "changed" ? 409 : 422, error.message);
+					throw error;
+				}
+				this.json(res, 200, { version: this.write(doc, current.version, next, "This block changed since you started editing.") });
+				return;
 			}
 			if (method === "GET" && action.length === 0) {
 				this.json(res, 200, this.payload(doc));
@@ -485,6 +483,34 @@ export class WorkshopServer {
 		return doc;
 	}
 
+	/** Atomically replace the document with `content`, if the file still has `version`. Returns the new version. */
+	private write(doc: OpenDoc, version: string, content: string, conflict: string): string {
+		// Resolve symlinks so replacement changes their target, not the document link.
+		const target = realpathSync(doc.path);
+		const mode = statSync(target).mode & 0o7777;
+		const temporary = join(dirname(target), `.workshop-${randomBytes(12).toString("hex")}.tmp`);
+		const fd = openSync(temporary, "wx", 0o600);
+		let replaced = false;
+		try {
+			try {
+				writeFileSync(fd, content, "utf8");
+				// Creation applies umask; restore the original permissions after writing.
+				fchmodSync(fd, mode);
+			} finally {
+				closeSync(fd);
+			}
+			if (this.source(doc).version !== version || realpathSync(doc.path) !== target) {
+				throw new HttpError(409, conflict);
+			}
+			renameSync(temporary, target);
+			replaced = true;
+		} finally {
+			if (!replaced) unlinkSync(temporary);
+		}
+		this.notify(doc);
+		return createHash("sha256").update(content, "utf8").digest("hex");
+	}
+
 	private source(doc: OpenDoc): { source: string; version: string } {
 		if (!existsSync(doc.path)) throw new HttpError(404, `${this.displayPath(doc.path)} no longer exists`);
 		const source = readFileSync(doc.path, "utf8");
@@ -498,7 +524,7 @@ export class WorkshopServer {
 			path: this.displayPath(doc.path),
 			title: rendered.title,
 			hasMermaid: rendered.hasMermaid,
-			blocks: rendered.blocks.map(({ id, kind, html }) => ({ id, kind, html })),
+			blocks: rendered.blocks.map(({ id, kind, html, raw }) => ({ id, kind, html, raw })),
 			threads: doc.store.threads().map((t) => {
 				const attachment = attach(t.anchor, rendered.blocks);
 				const unchanged = !t.anchor.movedTo && attachment.blockId === t.anchor.blockId;
