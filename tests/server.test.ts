@@ -342,6 +342,23 @@ describe("WorkshopServer", () => {
 		expect(renameSync).not.toHaveBeenCalled();
 	});
 
+	it("refuses a block save when the file's bytes change during staging, even if they decode to the same text", async () => {
+		writeFileSync(docPath, "# Plan\n\nEdit me.\n\nOutside: \uFFFD\n");
+		const payload = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body);
+		// U+FFFD and an invalid byte both decode to U+FFFD, so a hash of decoded text can't tell them apart.
+		const swapped = Buffer.concat([Buffer.from("# Plan\n\nEdit me.\n\nOutside: "), Buffer.from([0xe9]), Buffer.from("\n")]);
+		const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+		vi.mocked(writeFileSync).mockImplementationOnce((file, source, options) => {
+			fs.writeFileSync(file, source, options);
+			fs.writeFileSync(docPath, swapped);
+		});
+		const saved = await call(server.port, `/api/doc/${docId}/blocks?${q}`, {
+			method: "POST", body: { original: "Edit me.", occurrence: 0, copies: 1, source: "Edited.", version: payload.version },
+		});
+		expect(saved.status).toBe(409);
+		expect(readFileSync(docPath)).toEqual(swapped);
+	});
+
 	it("notifies connected viewers after a source save", async () => {
 		const endpoint = `/api/doc/${docId}/source?${q}`;
 		const { version } = JSON.parse((await call(server.port, endpoint)).body);

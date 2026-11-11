@@ -404,9 +404,9 @@ export class WorkshopServer {
 				if (typeof original !== "string" || typeof source !== "string" || typeof version !== "string" || occurrence < 0 || copies <= occurrence) {
 					throw new HttpError(400, "Original, source and version must be strings, with whole-number occurrence and copies");
 				}
-				const current = this.source(doc);
+				const current = this.read(doc);
 				// Decoding and re-encoding would replace invalid bytes in parts of the file the user didn't edit.
-				if (!Buffer.from(current.source, "utf8").equals(readFileSync(doc.path))) {
+				if (!Buffer.from(current.source, "utf8").equals(current.bytes)) {
 					throw new HttpError(422, "This file isn't valid UTF-8, so it can't be edited one block at a time.");
 				}
 				let next: string;
@@ -514,20 +514,25 @@ export class WorkshopServer {
 		return createHash("sha256").update(content, "utf8").digest("hex");
 	}
 
-	private source(doc: OpenDoc): { source: string; version: string } {
+	/** The document's bytes, their text and a version. The version hashes bytes: invalid UTF-8 decodes like U+FFFD. */
+	private read(doc: OpenDoc): { bytes: Buffer; source: string; version: string } {
 		if (!existsSync(doc.path)) throw new HttpError(404, `${this.displayPath(doc.path)} no longer exists`);
-		const source = readFileSync(doc.path, "utf8");
-		return { source, version: createHash("sha256").update(source, "utf8").digest("hex") };
+		const bytes = readFileSync(doc.path);
+		return { bytes, source: bytes.toString("utf8"), version: createHash("sha256").update(bytes).digest("hex") };
+	}
+
+	private source(doc: OpenDoc): { source: string; version: string } {
+		const { source, version } = this.read(doc);
+		return { source, version };
 	}
 
 	private payload(doc: OpenDoc) {
-		if (!existsSync(doc.path)) throw new HttpError(404, `${this.displayPath(doc.path)} no longer exists`);
-		const source = readFileSync(doc.path, "utf8");
+		const { source, version } = this.read(doc);
 		const rendered = renderDocument(source);
 		return {
 			path: this.displayPath(doc.path),
 			// From the same read as the blocks, so a block save knows exactly which file the viewer saw.
-			version: createHash("sha256").update(source, "utf8").digest("hex"),
+			version,
 			title: rendered.title,
 			hasMermaid: rendered.hasMermaid,
 			blocks: rendered.blocks.map((b) => ({ id: b.id, kind: b.kind, html: b.html, source: editableSource(b) })),
