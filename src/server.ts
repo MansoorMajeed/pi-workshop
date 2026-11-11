@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attach, type Anchor } from "./anchor";
-import { BlockEditError, replaceBlock } from "./edit";
+import { BlockEditError, editableSource, replaceBlock } from "./edit";
 import { formatSendMessage } from "./message";
 import { liveEntries, removeEntry, writeEntry, type RegistryEntry } from "./registry";
 import { escapeHtml, normalize, renderDocument } from "./render";
@@ -398,8 +398,11 @@ export class WorkshopServer {
 			}
 			if (action[0] === "blocks" && action.length === 1 && method === "POST") {
 				const body = await readJson(req, MAX_SOURCE_BODY);
-				if (typeof body.blockId !== "string" || typeof body.source !== "string" || typeof body.version !== "string") {
-					throw new HttpError(400, "Block ID, source and version must be strings");
+				const { original, source, version } = body;
+				const occurrence = Number.isInteger(body.occurrence) ? (body.occurrence as number) : -1;
+				const copies = Number.isInteger(body.copies) ? (body.copies as number) : 0;
+				if (typeof original !== "string" || typeof source !== "string" || typeof version !== "string" || occurrence < 0 || copies <= occurrence) {
+					throw new HttpError(400, "Original, source and version must be strings, with whole-number occurrence and copies");
 				}
 				const current = this.source(doc);
 				// Decoding and re-encoding would replace invalid bytes in parts of the file the user didn't edit.
@@ -408,7 +411,7 @@ export class WorkshopServer {
 				}
 				let next: string;
 				try {
-					next = replaceBlock(current.source, body.blockId, body.source, { fileChanged: current.version !== body.version });
+					next = replaceBlock(current.source, { original, occurrence, copies }, source, { fileChanged: current.version !== version });
 				} catch (error) {
 					if (error instanceof BlockEditError) throw new HttpError(error.reason === "changed" ? 409 : 422, error.message);
 					throw error;
@@ -527,7 +530,7 @@ export class WorkshopServer {
 			version: createHash("sha256").update(source, "utf8").digest("hex"),
 			title: rendered.title,
 			hasMermaid: rendered.hasMermaid,
-			blocks: rendered.blocks.map(({ id, kind, html, raw }) => ({ id, kind, html, raw })),
+			blocks: rendered.blocks.map((b) => ({ id: b.id, kind: b.kind, html: b.html, source: editableSource(b) })),
 			threads: doc.store.threads().map((t) => {
 				const attachment = attach(t.anchor, rendered.blocks);
 				const unchanged = !t.anchor.movedTo && attachment.blockId === t.anchor.blockId;

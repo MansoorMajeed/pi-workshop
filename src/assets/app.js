@@ -19,7 +19,10 @@
 		railScroll: 0,
 		selected: undefined,
 		editor: undefined,
-		/** One block being edited in place: { blockId, source, original, version, saving, error, caret }. */
+		/**
+		 * One block being edited in place: { blockId, original, occurrence, copies, version, source, saving, error, caret }.
+		 * The block is found by its original text (blockId is just where it is on the current page).
+		 */
 		blockEditor: undefined,
 		loadingSource: false,
 		focus: undefined,
@@ -174,6 +177,7 @@
 				if (t.status === "resolved" && state.doc?.threads.find((previous) => previous.id === t.id)?.status !== "resolved") state.expanded.delete(t.id);
 			}
 			state.doc = doc;
+			locateEditedBlock();
 			state.error = undefined;
 		} catch (error) {
 			state.error = error.message;
@@ -322,9 +326,12 @@
 	function editBlock(blockId) {
 		const b = state.doc?.blocks.find((x) => x.id === blockId);
 		if (!b || state.blockEditor || state.editor) return;
-		// The server keeps a byte-order mark and the newlines after the block; only the block's own text is editable.
-		const text = b.raw.replace(/^\uFEFF/, "").replace(/\n+$/, "");
-		state.blockEditor = { blockId, source: text, original: text, version: state.doc.version, saving: false, error: undefined, caret: [text.length, text.length, "none"] };
+		const copies = state.doc.blocks.filter((x) => x.source === b.source);
+		const text = b.source;
+		state.blockEditor = {
+			blockId, original: text, occurrence: copies.indexOf(b), copies: copies.length, version: state.doc.version,
+			source: text, saving: false, error: undefined, caret: [text.length, text.length, "none"],
+		};
 		state.focus = "block";
 		render();
 	}
@@ -341,7 +348,8 @@
 		editor.error = undefined;
 		render();
 		try {
-			await api(`/api/doc/${docId}/blocks`, { blockId: editor.blockId, source: editor.source, version: editor.version });
+			const { original, occurrence, copies, version, source } = editor;
+			await api(`/api/doc/${docId}/blocks`, { original, occurrence, copies, version, source });
 			state.blockEditor = undefined;
 			await load();
 		} catch (error) {
@@ -358,6 +366,15 @@
 		if (editor.source !== editor.original && !window.confirm("Discard your changes to this block?")) return;
 		state.blockEditor = undefined;
 		render();
+	}
+
+	/** After a reload, find the open block on the new page by the same rule the server uses to save it. */
+	function locateEditedBlock() {
+		const editor = state.blockEditor;
+		if (!editor) return;
+		const copies = state.doc.blocks.filter((b) => b.source === editor.original);
+		const found = state.doc.version === editor.version ? copies[editor.occurrence] : editor.copies === 1 && copies.length === 1 ? copies[0] : undefined;
+		editor.blockId = found?.id;
 	}
 
 	function growToFit(textarea) {

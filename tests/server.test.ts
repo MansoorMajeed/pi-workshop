@@ -279,16 +279,16 @@ describe("WorkshopServer", () => {
 		const payload = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body);
 		expect(payload.version).toBe(version);
 		const para = payload.blocks[1];
-		expect(para.raw).toBe("Old\tpara.");
-		// Someone else edits another block after the viewer loaded; the block save still applies on top.
-		writeFileSync(docPath, original.replace("- b", "- b (agent)"));
+		expect(para.source).toBe("Old\tpara.");
+		// Someone else renames the heading and edits another block after the viewer loaded; the block save still applies.
+		writeFileSync(docPath, original.replace("# Plan", "# Renamed plan").replace("- b", "- b (agent)"));
 		let saved: Promise<Res>;
 		const event = await nextEvent(server.port, `/api/events?doc=${docId}&${q}`, () => {
-			saved = call(server.port, `/api/doc/${docId}/blocks?${q}`, { method: "POST", body: { blockId: para.id, source: "New\npara.", version } });
+			saved = call(server.port, `/api/doc/${docId}/blocks?${q}`, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "New\npara.", version } });
 		});
 		expect(event.name).toBe("changed");
 		expect((await saved!).status).toBe(200);
-		expect(readFileSync(docPath, "utf8")).toBe("# Plan\r\n\r\nNew\r\npara.\r\n\r\n- a\n- b (agent)\n");
+		expect(readFileSync(docPath, "utf8")).toBe("# Renamed plan\r\n\r\nNew\r\npara.\r\n\r\n- a\n- b (agent)\n");
 		expect(statSync(docPath).mode & 0o777).toBe(0o640);
 	});
 
@@ -300,16 +300,16 @@ describe("WorkshopServer", () => {
 		const para = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body).blocks[1];
 		const files = readdirSync(dir).sort();
 
-		const broken = await call(server.port, endpoint, { method: "POST", body: { blockId: para.id, source: "```\nunclosed", version } });
+		const broken = await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "```\nunclosed", version } });
 		expect(broken.status).toBe(422);
 		expect(JSON.parse(broken.body).error).toMatch(/code fence/);
 		expect(readFileSync(docPath, "utf8")).toBe(original);
 
-		expect((await call(server.port, endpoint, { method: "POST", body: { blockId: para.id, source: 1, version } })).status).toBe(400);
+		expect((await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: 1, version } })).status).toBe(400);
 
 		const changed = original.replace("Para.", "Para, edited elsewhere.");
 		writeFileSync(docPath, changed);
-		const stale = await call(server.port, endpoint, { method: "POST", body: { blockId: para.id, source: "Mine.", version } });
+		const stale = await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "Mine.", version } });
 		expect(stale.status).toBe(409);
 		expect(JSON.parse(stale.body).error).toMatch(/changed/i);
 		expect(readFileSync(docPath, "utf8")).toBe(changed);
@@ -317,7 +317,7 @@ describe("WorkshopServer", () => {
 		// Decoding and re-encoding would replace invalid bytes elsewhere in the file.
 		const latin1 = Buffer.concat([Buffer.from("# Plan\n\nPara.\n\nCaf"), Buffer.from([0xe9]), Buffer.from(".\n")]);
 		writeFileSync(docPath, latin1);
-		const invalid = await call(server.port, endpoint, { method: "POST", body: { blockId: para.id, source: "Mine.", version } });
+		const invalid = await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "Mine.", version } });
 		expect(invalid.status).toBe(422);
 		expect(JSON.parse(invalid.body).error).toMatch(/UTF-8/);
 		expect(readFileSync(docPath)).toEqual(latin1);
@@ -335,7 +335,7 @@ describe("WorkshopServer", () => {
 			fs.writeFileSync(file, source, options);
 			fs.writeFileSync(docPath, external);
 		});
-		const saved = await call(server.port, `/api/doc/${docId}/blocks?${q}`, { method: "POST", body: { blockId: block.id, source: "# Mine", version } });
+		const saved = await call(server.port, `/api/doc/${docId}/blocks?${q}`, { method: "POST", body: { original: block.source, occurrence: 0, copies: 1, source: "# Mine", version } });
 		expect(saved.status).toBe(409);
 		expect(readFileSync(docPath, "utf8")).toBe(external);
 		expect(readdirSync(dir).sort()).toEqual(files);

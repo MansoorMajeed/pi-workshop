@@ -58,9 +58,10 @@ When the agent rewrites the text a thread points at, it tells the thread where t
 
 To change one passage, hover it and click the pencil below the **+** in the margin. Hovering the pencil outlines what will open: a whole list, table or diagram, since those are single blocks. The block turns into its Markdown right where it was. **Save** (or Cmd/Ctrl-Enter) writes it to the file, and **Cancel** (or Esc) closes it, asking first if you changed anything. Clicking elsewhere leaves the box and your draft as they are. You can edit one block at a time.
 
-A block save changes only that block's text in the file; every other byte stays as it was, including line endings. Changes elsewhere in the file, such as the agent's edits, don't get in the way. The save is refused, and your draft kept, if:
+A block save changes only that block's text in the file; every other byte stays as it was, including line endings. The block is found by its text, so changes elsewhere in the file, such as the agent renaming its section or moving it, don't get in the way. The save is refused, and your draft kept, if:
 
-- the block itself changed since you opened it (the box then moves to the bottom of the page if the block is gone);
+- the block's text changed since you opened it, even just its spacing (the box then moves to the bottom of the page);
+- the file changed and the block's text appears more than once, or did when you opened it, so it's unclear which copy you meant;
 - your edit would change how the text around it reads, such as an unclosed code fence swallowing the rest of the document;
 - the file isn't valid UTF-8.
 

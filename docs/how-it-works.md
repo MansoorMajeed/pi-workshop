@@ -27,7 +27,7 @@ A save writes the new content to a temporary file next to the document, restores
 
 If the document is a symlink, the save goes to the file it points at and the symlink is kept. Because the file is replaced rather than rewritten in place, a hard link to the document keeps pointing at the old content, and extended attributes on the file aren't carried over.
 
-A single-block save finds the block in the current file and copies every byte outside it unchanged, so mixed line endings, a byte-order mark and trailing whitespace survive. New lines get the block's own line ending. It then parses the result and refuses the save if any other block would read differently.
+A single-block save finds the block in the current file by its exact text. While the file is unchanged, it also uses which copy of identical blocks was opened; after a change, it only edits a block whose text was and still is unique. It copies every byte outside the block unchanged, so mixed line endings, a byte-order mark and trailing whitespace survive. New lines get the block's own line ending. It then parses the result and refuses the save if any other block would read differently.
 
 Source and block saves are limited to 1 MiB per request, including JSON escaping.
 

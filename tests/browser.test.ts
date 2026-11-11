@@ -153,13 +153,15 @@ browserTests("workshop viewer in Chrome", () => {
 		await typeBlock("Keep it **readable**.\nSecond line.");
 		// Clicking elsewhere and an outside edit to another block leave the editor and draft alone.
 		await page.evaluate(`(() => {document.querySelector('.doc h1').click(); document.activeElement.blur();})()`);
-		writeFileSync(file, readFileSync(file, "utf8").replace("Another passage to review.", "Another passage, edited by the agent."));
+		// Renaming the section changes every block ID under it; the editor stays on its block.
+		writeFileSync(file, readFileSync(file, "utf8").replace("## Proposal", "## Renamed proposal").replace("Another passage to review.", "Another passage, edited by the agent."));
 		await page.until(`document.body.textContent.includes('edited by the agent')`);
-		expect(await page.evaluate(`document.querySelector('[data-block-editor]').value`)).toBe("Keep it **readable**.\nSecond line.");
+		expect(await page.evaluate(`document.querySelector('.doc-prose [data-block-editor]')?.value`)).toBe("Keep it **readable**.\nSecond line.");
+		expect(await page.evaluate(`!!document.querySelector('.outdated')`)).toBe(false);
 
 		await page.evaluate(`document.querySelector('[data-block-editor]').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', metaKey: true, bubbles: true}))`);
 		await page.until(`!document.querySelector('[data-block-editor]') && !!document.querySelector('.doc strong')`);
-		expect(readFileSync(file, "utf8")).toBe("# A shared draft\n\n## Proposal\n\nKeep it **readable**.\nSecond line.\n\nAnother passage, edited by the agent.\n");
+		expect(readFileSync(file, "utf8")).toBe("# A shared draft\n\n## Renamed proposal\n\nKeep it **readable**.\nSecond line.\n\nAnother passage, edited by the agent.\n");
 	});
 
 	it("keeps a block draft when its block changes underneath, and Esc discards it after asking", async () => {
