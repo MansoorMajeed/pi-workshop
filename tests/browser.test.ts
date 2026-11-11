@@ -184,6 +184,31 @@ browserTests("workshop viewer in Chrome", () => {
 		await page.until(`!document.querySelector('[data-block-editor]') && document.body.textContent.includes('Rewritten outside.')`);
 	});
 
+	it("offers the pencil on blocks with no commentable line, such as a horizontal rule", async () => {
+		writeFileSync(file, "# A shared draft\n\nBefore.\n\n---\n\nAfter.\n");
+		await page.until(`!!document.querySelector('.block-body hr')`);
+		await page.evaluate(`document.querySelector('.block-body hr').dispatchEvent(new MouseEvent('mousemove', {bubbles: true}))`);
+		expect(await page.evaluate(`[document.querySelector('.line-add').hidden, document.querySelector('.line-edit').hidden]`)).toEqual([true, false]);
+		await page.evaluate(`document.querySelector('.line-edit').click()`);
+		await page.until(`document.querySelector('[data-block-editor]')?.value === '---'`);
+		await typeBlock("***");
+		await page.click("Save");
+		await page.until(`!document.querySelector('[data-block-editor]')`);
+		expect(readFileSync(file, "utf8")).toBe("# A shared draft\n\nBefore.\n\n***\n\nAfter.\n");
+	});
+
+	it("does not open a block while the whole-source editor is loading", async () => {
+		// Hold the source request so the loading state lasts long enough to try the pencil.
+		await page.evaluate(`(() => {const f = window.fetch; window.fetch = (u, o) => String(u).includes('/source') ? new Promise((r) => setTimeout(() => r(f(u, o)), 400)) : f(u, o);})()`);
+		await page.click("Edit");
+		await page.until(`[...document.querySelectorAll('button')].some(b => b.textContent === 'Loading…')`);
+		await hoverParagraph("Keep the document readable");
+		expect(await page.evaluate(`document.querySelector('.line-edit').hidden`)).toBe(true);
+		await page.evaluate(`document.querySelector('.line-edit').click()`);
+		await page.until(`!!document.querySelector('[data-source-editor]')`);
+		expect(await page.evaluate(`!!document.querySelector('[data-block-editor]')`)).toBe(false);
+	});
+
 	it("preserves a source draft on external updates and stale saves, and Cancel reloads the file", async () => {
 		await page.click("Edit");
 		await page.until(`!!document.querySelector('[data-source-editor]')`);

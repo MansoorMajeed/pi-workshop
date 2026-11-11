@@ -325,7 +325,7 @@
 
 	function editBlock(blockId) {
 		const b = state.doc?.blocks.find((x) => x.id === blockId);
-		if (!b || state.blockEditor || state.editor) return;
+		if (!b || state.blockEditor || state.editor || state.loadingSource) return;
 		const copies = state.doc.blocks.filter((x) => x.source === b.source);
 		const text = b.source;
 		state.blockEditor = {
@@ -698,8 +698,10 @@
 	app.addEventListener("mousemove", (e) => {
 		if (e.target === lineAdd || e.target === lineEdit) return;
 		const el = commentable(e.target);
-		// Diagrams take comments by clicking labels, so they get only the edit button.
-		const diagram = !el && e.target instanceof Element ? e.target.closest(".block-body pre.mermaid") : null;
+		// Diagrams (commented on by clicking labels) and blocks with no commentable line, such as a
+		// horizontal rule, get only the edit button.
+		const body = !el && e.target instanceof Element && !e.target.closest(".thread, .composer, .block-editor") ? e.target.closest(".block-body") : null;
+		const diagram = body && (e.target.closest("pre.mermaid") ?? (body.querySelector(COMMENTABLE) ? null : body));
 		// Over margins and gaps (e.g. on the way to the +), keep the current line; hide only over other UI.
 		if (!el && !diagram && !(e.target instanceof Element && e.target.closest(".thread, .composer, .topbar, .sidebar, .outdated, .block-editor"))) return;
 		const target = el ?? diagram ?? undefined;
@@ -707,7 +709,7 @@
 		hoverTarget = target;
 		lineTarget = el;
 		lineAdd.hidden = !el;
-		lineEdit.hidden = !target || Boolean(state.blockEditor);
+		lineEdit.hidden = !target || Boolean(state.blockEditor || state.loadingSource);
 		if (target) {
 			const top = docOffset(target.getBoundingClientRect()).top;
 			lineAdd.style.top = `${top}px`;
