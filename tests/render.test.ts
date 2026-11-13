@@ -67,6 +67,14 @@ describe("renderDocument", () => {
 		expect(attach({ section: "", path: "", blockId: "gone", quote: "alpha beta" }, [para, table])).toEqual({ status: "exact", blockId: table.id });
 	});
 
+	it("records each block's exact source and where it starts in the LF-normalized text", () => {
+		const source = "# Plan\r\n\r\nIntro\ttext   \r\nmore\r\n\r\n[ref]: https://x\r\n\r\n- a\r\n- b\r\n";
+		const lf = source.replace(/\r\n/g, "\n");
+		const { blocks } = renderDocument(source);
+		expect(blocks.map((b) => b.raw)).toEqual(["# Plan", "Intro\ttext   \nmore", "- a\n- b\n"]);
+		for (const b of blocks) expect(lf.slice(b.start, b.start + b.raw.length)).toBe(b.raw);
+	});
+
 	it("gives duplicate headings and blocks distinct IDs", () => {
 		const doc = renderDocument("## Notes\n\nSame.\n\nSame.\n\n## Notes\n\nOther.");
 		expect(doc.blocks.map((b) => b.heading)).toEqual(["notes", "notes", "notes", "notes-1", "notes-1"]);

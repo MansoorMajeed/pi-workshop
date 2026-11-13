@@ -136,6 +136,79 @@ browserTests("workshop viewer in Chrome", () => {
 		expect(readFileSync(file, "utf8")).toBe("# Revised together\n\nSaved from the browser.\n");
 	});
 
+	const hoverParagraph = (text: string) => page.evaluate(`(() => {const p = [...document.querySelectorAll('.block-body p')].find(p => p.textContent.includes(${JSON.stringify(text)})); p.dispatchEvent(new MouseEvent('mousemove', {bubbles: true})); return true;})()`);
+	const typeBlock = (text: string) => page.evaluate(`(() => {const e = document.querySelector('[data-block-editor]'); e.value = ${JSON.stringify(text)}; e.dispatchEvent(new Event('input', {bubbles:true}));})()`);
+
+	it("edits one block in place and keeps the editor open until Save", async () => {
+		await hoverParagraph("Keep the document readable");
+		expect(await page.evaluate(`!document.querySelector('.line-edit').hidden`)).toBe(true);
+		await page.evaluate(`document.querySelector('.line-edit').dispatchEvent(new MouseEvent('mouseenter'))`);
+		expect(await page.evaluate(`document.querySelector('.block.edit-target')?.textContent.trim()`)).toBe("Keep the document readable while discussing it.");
+		await page.evaluate(`document.querySelector('.line-edit').click()`);
+		await page.until(`document.activeElement?.hasAttribute('data-block-editor')`);
+		expect(await page.evaluate(`document.querySelector('[data-block-editor]').value`)).toBe("Keep the document readable while discussing it.");
+		expect(await page.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Edit').disabled`)).toBe(true);
+		if (process.env.WORKSHOP_SCREENSHOTS === "1") writeFileSync(".scratch/workshop-block-editor.png", Buffer.from((await page.command("Page.captureScreenshot")).data, "base64"));
+
+		await typeBlock("Keep it **readable**.\nSecond line.");
+		// Clicking elsewhere and an outside edit to another block leave the editor and draft alone.
+		await page.evaluate(`(() => {document.querySelector('.doc h1').click(); document.activeElement.blur();})()`);
+		// Renaming the section changes every block ID under it; the editor stays on its block.
+		writeFileSync(file, readFileSync(file, "utf8").replace("## Proposal", "## Renamed proposal").replace("Another passage to review.", "Another passage, edited by the agent."));
+		await page.until(`document.body.textContent.includes('edited by the agent')`);
+		expect(await page.evaluate(`document.querySelector('.doc-prose [data-block-editor]')?.value`)).toBe("Keep it **readable**.\nSecond line.");
+		expect(await page.evaluate(`!!document.querySelector('.outdated')`)).toBe(false);
+
+		await page.evaluate(`document.querySelector('[data-block-editor]').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', metaKey: true, bubbles: true}))`);
+		await page.until(`!document.querySelector('[data-block-editor]') && !!document.querySelector('.doc strong')`);
+		expect(readFileSync(file, "utf8")).toBe("# A shared draft\n\n## Renamed proposal\n\nKeep it **readable**.\nSecond line.\n\nAnother passage, edited by the agent.\n");
+	});
+
+	it("keeps a block draft when its block changes underneath, and Esc discards it after asking", async () => {
+		await hoverParagraph("Another passage");
+		await page.evaluate(`document.querySelector('.line-edit').click()`);
+		await page.until(`!!document.querySelector('[data-block-editor]')`);
+		await typeBlock("My version.");
+		const outside = readFileSync(file, "utf8").replace("Another passage to review.", "Rewritten outside.");
+		writeFileSync(file, outside);
+		await page.until(`document.querySelector('.outdated [data-block-editor]')?.value === 'My version.'`);
+		await page.click("Save");
+		await page.until(`document.querySelector('.block-editor .source-error')?.textContent.includes('changed')`);
+		expect(readFileSync(file, "utf8")).toBe(outside);
+		// Esc asks first; declining keeps the draft.
+		await page.evaluate("window.confirm = () => (window.asked = true, false)");
+		await page.evaluate(`document.querySelector('[data-block-editor]').dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}))`);
+		expect(await page.evaluate("window.asked === true && document.querySelector('[data-block-editor]')?.value === 'My version.'")).toBe(true);
+		await page.evaluate("window.confirm = () => true");
+		await page.click("Cancel");
+		await page.until(`!document.querySelector('[data-block-editor]') && document.body.textContent.includes('Rewritten outside.')`);
+	});
+
+	it("offers the pencil on blocks with no commentable line, such as a horizontal rule", async () => {
+		writeFileSync(file, "# A shared draft\n\nBefore.\n\n---\n\nAfter.\n");
+		await page.until(`!!document.querySelector('.block-body hr')`);
+		await page.evaluate(`document.querySelector('.block-body hr').dispatchEvent(new MouseEvent('mousemove', {bubbles: true}))`);
+		expect(await page.evaluate(`[document.querySelector('.line-add').hidden, document.querySelector('.line-edit').hidden]`)).toEqual([true, false]);
+		await page.evaluate(`document.querySelector('.line-edit').click()`);
+		await page.until(`document.querySelector('[data-block-editor]')?.value === '---'`);
+		await typeBlock("***");
+		await page.click("Save");
+		await page.until(`!document.querySelector('[data-block-editor]')`);
+		expect(readFileSync(file, "utf8")).toBe("# A shared draft\n\nBefore.\n\n***\n\nAfter.\n");
+	});
+
+	it("does not open a block while the whole-source editor is loading", async () => {
+		// Hold the source request so the loading state lasts long enough to try the pencil.
+		await page.evaluate(`(() => {const f = window.fetch; window.fetch = (u, o) => String(u).includes('/source') ? new Promise((r) => setTimeout(() => r(f(u, o)), 400)) : f(u, o);})()`);
+		await page.click("Edit");
+		await page.until(`[...document.querySelectorAll('button')].some(b => b.textContent === 'Loading…')`);
+		await hoverParagraph("Keep the document readable");
+		expect(await page.evaluate(`document.querySelector('.line-edit').hidden`)).toBe(true);
+		await page.evaluate(`document.querySelector('.line-edit').click()`);
+		await page.until(`!!document.querySelector('[data-source-editor]')`);
+		expect(await page.evaluate(`!!document.querySelector('[data-block-editor]')`)).toBe(false);
+	});
+
 	it("preserves a source draft on external updates and stale saves, and Cancel reloads the file", async () => {
 		await page.click("Edit");
 		await page.until(`!!document.querySelector('[data-source-editor]')`);

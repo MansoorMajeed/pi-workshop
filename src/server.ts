@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { attach, type Anchor } from "./anchor";
+import { BlockEditError, editableSource, replaceBlock } from "./edit";
 import { formatSendMessage } from "./message";
 import { liveEntries, removeEntry, writeEntry, type RegistryEntry } from "./registry";
 import { escapeHtml, normalize, renderDocument } from "./render";
@@ -391,32 +392,32 @@ export class WorkshopServer {
 					if (this.source(doc).version !== body.version) {
 						throw new HttpError(409, "The document changed. Reload the source before saving again.");
 					}
-					// Resolve symlinks so replacement changes their target, not the document link.
-					const target = realpathSync(doc.path);
-					const mode = statSync(target).mode & 0o7777;
-					const temporary = join(dirname(target), `.workshop-${randomBytes(12).toString("hex")}.tmp`);
-					const fd = openSync(temporary, "wx", 0o600);
-					let replaced = false;
-					try {
-						try {
-							writeFileSync(fd, body.source, "utf8");
-							// Creation applies umask; restore the original permissions after writing.
-							fchmodSync(fd, mode);
-						} finally {
-							closeSync(fd);
-						}
-						if (this.source(doc).version !== body.version || realpathSync(doc.path) !== target) {
-							throw new HttpError(409, "The document changed. Reload the source before saving again.");
-						}
-						renameSync(temporary, target);
-						replaced = true;
-					} finally {
-						if (!replaced) unlinkSync(temporary);
-					}
-					this.notify(doc);
-					this.json(res, 200, { version: createHash("sha256").update(body.source, "utf8").digest("hex") });
+					this.json(res, 200, { version: this.write(doc, body.version, body.source, "The document changed. Reload the source before saving again.") });
 					return;
 				}
+			}
+			if (action[0] === "blocks" && action.length === 1 && method === "POST") {
+				const body = await readJson(req, MAX_SOURCE_BODY);
+				const { original, source, version } = body;
+				const occurrence = Number.isInteger(body.occurrence) ? (body.occurrence as number) : -1;
+				const copies = Number.isInteger(body.copies) ? (body.copies as number) : 0;
+				if (typeof original !== "string" || typeof source !== "string" || typeof version !== "string" || occurrence < 0 || copies <= occurrence) {
+					throw new HttpError(400, "Original, source and version must be strings, with whole-number occurrence and copies");
+				}
+				const current = this.read(doc);
+				// Decoding and re-encoding would replace invalid bytes in parts of the file the user didn't edit.
+				if (!Buffer.from(current.source, "utf8").equals(current.bytes)) {
+					throw new HttpError(422, "This file isn't valid UTF-8, so it can't be edited one block at a time.");
+				}
+				let next: string;
+				try {
+					next = replaceBlock(current.source, { original, occurrence, copies }, source, { fileChanged: current.version !== version });
+				} catch (error) {
+					if (error instanceof BlockEditError) throw new HttpError(error.reason === "changed" ? 409 : 422, error.message);
+					throw error;
+				}
+				this.json(res, 200, { version: this.write(doc, current.version, next, "This block changed since you started editing.") });
+				return;
 			}
 			if (method === "GET" && action.length === 0) {
 				this.json(res, 200, this.payload(doc));
@@ -485,20 +486,56 @@ export class WorkshopServer {
 		return doc;
 	}
 
-	private source(doc: OpenDoc): { source: string; version: string } {
+	/** Atomically replace the document with `content`, if the file still has `version`. Returns the new version. */
+	private write(doc: OpenDoc, version: string, content: string, conflict: string): string {
+		// Resolve symlinks so replacement changes their target, not the document link.
+		const target = realpathSync(doc.path);
+		const mode = statSync(target).mode & 0o7777;
+		const temporary = join(dirname(target), `.workshop-${randomBytes(12).toString("hex")}.tmp`);
+		const fd = openSync(temporary, "wx", 0o600);
+		let replaced = false;
+		try {
+			try {
+				writeFileSync(fd, content, "utf8");
+				// Creation applies umask; restore the original permissions after writing.
+				fchmodSync(fd, mode);
+			} finally {
+				closeSync(fd);
+			}
+			if (this.source(doc).version !== version || realpathSync(doc.path) !== target) {
+				throw new HttpError(409, conflict);
+			}
+			renameSync(temporary, target);
+			replaced = true;
+		} finally {
+			if (!replaced) unlinkSync(temporary);
+		}
+		this.notify(doc);
+		return createHash("sha256").update(content, "utf8").digest("hex");
+	}
+
+	/** The document's bytes, their text and a version. The version hashes bytes: invalid UTF-8 decodes like U+FFFD. */
+	private read(doc: OpenDoc): { bytes: Buffer; source: string; version: string } {
 		if (!existsSync(doc.path)) throw new HttpError(404, `${this.displayPath(doc.path)} no longer exists`);
-		const source = readFileSync(doc.path, "utf8");
-		return { source, version: createHash("sha256").update(source, "utf8").digest("hex") };
+		const bytes = readFileSync(doc.path);
+		return { bytes, source: bytes.toString("utf8"), version: createHash("sha256").update(bytes).digest("hex") };
+	}
+
+	private source(doc: OpenDoc): { source: string; version: string } {
+		const { source, version } = this.read(doc);
+		return { source, version };
 	}
 
 	private payload(doc: OpenDoc) {
-		if (!existsSync(doc.path)) throw new HttpError(404, `${this.displayPath(doc.path)} no longer exists`);
-		const rendered = renderDocument(readFileSync(doc.path, "utf8"));
+		const { source, version } = this.read(doc);
+		const rendered = renderDocument(source);
 		return {
 			path: this.displayPath(doc.path),
+			// From the same read as the blocks, so a block save knows exactly which file the viewer saw.
+			version,
 			title: rendered.title,
 			hasMermaid: rendered.hasMermaid,
-			blocks: rendered.blocks.map(({ id, kind, html }) => ({ id, kind, html })),
+			blocks: rendered.blocks.map((b) => ({ id: b.id, kind: b.kind, html: b.html, source: editableSource(b) })),
 			threads: doc.store.threads().map((t) => {
 				const attachment = attach(t.anchor, rendered.blocks);
 				const unchanged = !t.anchor.movedTo && attachment.blockId === t.anchor.blockId;

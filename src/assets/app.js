@@ -19,6 +19,11 @@
 		railScroll: 0,
 		selected: undefined,
 		editor: undefined,
+		/**
+		 * One block being edited in place: { blockId, original, occurrence, copies, version, source, saving, error, caret }.
+		 * The block is found by its original text (blockId is just where it is on the current page).
+		 */
+		blockEditor: undefined,
 		loadingSource: false,
 		focus: undefined,
 		/** A document the agent asked to show while a comment was being typed. */
@@ -172,6 +177,7 @@
 				if (t.status === "resolved" && state.doc?.threads.find((previous) => previous.id === t.id)?.status !== "resolved") state.expanded.delete(t.id);
 			}
 			state.doc = doc;
+			locateEditedBlock();
 			state.error = undefined;
 		} catch (error) {
 			state.error = error.message;
@@ -196,7 +202,7 @@
 		events.addEventListener("show", (e) => {
 			const { url } = JSON.parse(e.data);
 			if (!/^http:\/\/127\.0\.0\.1:\d+\/doc\//.test(url)) return;
-			if (state.editor || state.loadingSource || hasUnsavedText()) {
+			if (state.editor || state.blockEditor || state.loadingSource || hasUnsavedText()) {
 				state.showLater = url;
 				render();
 			} else location.href = url;
@@ -213,7 +219,9 @@
 	// ---------- actions ----------
 
 	function hasUnsavedText() {
-		return (state.editor && state.editor.source !== state.editor.original) || [...state.composers.values()].some((text) => text.length > 0);
+		return (state.editor && state.editor.source !== state.editor.original) ||
+			(state.blockEditor && state.blockEditor.source !== state.blockEditor.original) ||
+			[...state.composers.values()].some((text) => text.length > 0);
 	}
 
 	let navigationConfirmed = false;
@@ -309,6 +317,101 @@
 					: h("button", { class: "btn btn-primary", disabled: editor.saving, onclick: () => saveSource() }, editor.saving ? "Saving…" : "Save"),
 				editor.conflict && h("button", { class: "btn", disabled: editor.saving, onclick: reloadSource }, "Reload document"),
 				h("button", { class: "btn", disabled: editor.saving, onclick: cancelSource }, "Cancel"),
+			),
+		);
+	}
+
+	// ---------- editing one block in place ----------
+
+	function editBlock(blockId) {
+		const b = state.doc?.blocks.find((x) => x.id === blockId);
+		if (!b || state.blockEditor || state.editor || state.loadingSource) return;
+		const copies = state.doc.blocks.filter((x) => x.source === b.source);
+		const text = b.source;
+		state.blockEditor = {
+			blockId, original: text, occurrence: copies.indexOf(b), copies: copies.length, version: state.doc.version,
+			source: text, saving: false, error: undefined, caret: [text.length, text.length, "none"],
+		};
+		state.focus = "block";
+		render();
+	}
+
+	async function saveBlock() {
+		const editor = state.blockEditor;
+		if (!editor || editor.saving) return;
+		if (editor.source === editor.original) {
+			state.blockEditor = undefined;
+			render();
+			return;
+		}
+		editor.saving = true;
+		editor.error = undefined;
+		render();
+		try {
+			const { original, occurrence, copies, version, source } = editor;
+			await api(`/api/doc/${docId}/blocks`, { original, occurrence, copies, version, source });
+			state.blockEditor = undefined;
+			await load();
+		} catch (error) {
+			editor.saving = false;
+			editor.error = error.message;
+			state.focus = "block";
+			render();
+		}
+	}
+
+	function cancelBlock() {
+		const editor = state.blockEditor;
+		if (!editor || editor.saving) return;
+		if (editor.source !== editor.original && !window.confirm("Discard your changes to this block?")) return;
+		state.blockEditor = undefined;
+		render();
+	}
+
+	/** After a reload, find the open block on the new page by the same rule the server uses to save it. */
+	function locateEditedBlock() {
+		const editor = state.blockEditor;
+		if (!editor) return;
+		const copies = state.doc.blocks.filter((b) => b.source === editor.original);
+		const found = state.doc.version === editor.version ? copies[editor.occurrence] : editor.copies === 1 && copies.length === 1 ? copies[0] : undefined;
+		editor.blockId = found?.id;
+	}
+
+	function growToFit(textarea) {
+		textarea.style.height = "auto";
+		textarea.style.height = `${textarea.scrollHeight + 2}px`;
+	}
+
+	function blockEditor(stranded) {
+		const editor = state.blockEditor;
+		const textarea = h("textarea", {
+			"data-block-editor": true,
+			spellcheck: "false",
+			readonly: editor.saving,
+			"aria-label": "Markdown for this block",
+			oninput: (event) => {
+				editor.source = event.target.value;
+				growToFit(event.target);
+			},
+			onkeydown: (event) => {
+				if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+					event.preventDefault();
+					saveBlock();
+				} else if (event.key === "Escape") {
+					event.preventDefault();
+					cancelBlock();
+				}
+			},
+		});
+		textarea.value = editor.source;
+		return h("div", { class: "block-editor" },
+			stranded && h("p", { class: "source-help" }, "This block changed while you were editing. Copy anything you want to keep, then Cancel to see the current version."),
+			textarea,
+			editor.error && h("p", { class: "source-error", role: "alert" }, editor.error),
+			h("div", { class: "source-actions" },
+				h("button", { class: "btn btn-primary", disabled: editor.saving, onclick: saveBlock }, editor.saving ? "Saving…" : "Save"),
+				h("button", { class: "btn", disabled: editor.saving, onclick: cancelBlock }, "Cancel"),
+				h("span", { class: "block-editor-hint" }, "⌘/Ctrl-Enter to save · Esc to cancel"),
 			),
 		);
 	}
@@ -484,16 +587,18 @@
 	}
 
 	function block(b, threads) {
+		const editing = state.blockEditor?.blockId === b.id;
 		const body = h("div", { class: "block-body" });
-		body.innerHTML = b.html; // Server-rendered with raw HTML escaped.
+		if (editing) body.append(blockEditor(false));
+		else body.innerHTML = b.html; // Server-rendered with raw HTML escaped.
 		const comments = h("aside", { class: "block-comments", "data-comment-block": b.id, "aria-label": "Comments on this passage" });
 		for (const t of threads) {
-			if (t.attachment.status === "exact" && !t.diagram && t.status !== "resolved") highlight(body, t.highlight ?? t.quote, t.context, "hl", t.occurrence, t.id);
+			if (!editing && t.attachment.status === "exact" && !t.diagram && t.status !== "resolved") highlight(body, t.highlight ?? t.quote, t.context, "hl", t.occurrence, t.id);
 			comments.append(thread(t));
 		}
 		for (const [key, anchor] of state.pending) {
 			if (anchor.blockId !== b.id) continue;
-			if (!anchor.label) highlight(body, anchor.quote, anchor.context, "hl hl-pending", anchor.occurrence);
+			if (!anchor.label && !editing) highlight(body, anchor.quote, anchor.context, "hl hl-pending", anchor.occurrence);
 			comments.append(composer(key, "Comment…"));
 		}
 		return h("section", { class: `block block-${b.kind}${threads.length ? " has-threads" : ""}`, "data-block": b.id }, body, comments);
@@ -526,8 +631,24 @@
 
 	const COMMENTABLE = "p, li, tr, h1, h2, h3, h4, h5, h6, pre";
 	let lineTarget;
+	/** What the margin buttons point at: the commentable line, or a diagram (edit only). */
+	let hoverTarget;
 	let selection;
 	const lineAdd = h("button", { class: "line-add", title: "Comment on this", "aria-label": "Comment on this", hidden: true, onclick: () => commentOnLine() }, "+");
+	const outlineEditTarget = (on) => {
+		app.querySelector(".block.edit-target")?.classList.remove("edit-target");
+		if (on) hoverTarget?.closest(".block")?.classList.add("edit-target");
+	};
+	const lineEdit = h("button", {
+		class: "line-edit", title: "Edit this block", "aria-label": "Edit this block", hidden: true,
+		onmouseenter: () => outlineEditTarget(true), onmouseleave: () => outlineEditTarget(false),
+		onfocus: () => outlineEditTarget(true), onblur: () => outlineEditTarget(false),
+		onclick: () => {
+			const id = hoverTarget && blockIdOf(hoverTarget);
+			outlineEditTarget(false);
+			if (id) editBlock(id);
+		},
+	}, "✎");
 	const selAdd = h("button", { class: "btn btn-primary sel-add", hidden: true, onmousedown: (e) => e.preventDefault(), onclick: () => selection && openNew(selection) }, "Comment");
 
 	function commentable(target) {
@@ -575,19 +696,33 @@
 	}
 
 	app.addEventListener("mousemove", (e) => {
-		if (e.target === lineAdd) return;
+		if (e.target === lineAdd || e.target === lineEdit) return;
 		const el = commentable(e.target);
+		// Diagrams (commented on by clicking labels) and blocks with no commentable line, such as a
+		// horizontal rule, get only the edit button.
+		const body = !el && e.target instanceof Element && !e.target.closest(".thread, .composer, .block-editor") ? e.target.closest(".block-body") : null;
+		const diagram = body && (e.target.closest("pre.mermaid") ?? (body.querySelector(COMMENTABLE) ? null : body));
 		// Over margins and gaps (e.g. on the way to the +), keep the current line; hide only over other UI.
-		if (!el && !(e.target instanceof Element && e.target.closest(".thread, .composer, .topbar, .sidebar, .outdated"))) return;
-		if (el === lineTarget) return;
+		if (!el && !diagram && !(e.target instanceof Element && e.target.closest(".thread, .composer, .topbar, .sidebar, .outdated, .block-editor"))) return;
+		const target = el ?? diagram ?? undefined;
+		if (target === hoverTarget) return;
+		hoverTarget = target;
 		lineTarget = el;
 		lineAdd.hidden = !el;
-		if (el) lineAdd.style.top = `${docOffset(el.getBoundingClientRect()).top}px`;
+		lineEdit.hidden = !target || Boolean(state.blockEditor || state.loadingSource);
+		if (target) {
+			const top = docOffset(target.getBoundingClientRect()).top;
+			lineAdd.style.top = `${top}px`;
+			lineEdit.style.top = `${el ? top + 30 : top}px`;
+		}
 	});
 
 	app.addEventListener("mouseleave", () => {
 		lineTarget = undefined;
+		hoverTarget = undefined;
 		lineAdd.hidden = true;
+		lineEdit.hidden = true;
+		outlineEditTarget(false);
 	});
 
 	function updateSelection() {
@@ -597,7 +732,7 @@
 		if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
 		const range = sel.getRangeAt(0).cloneRange();
 		const startEl = range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement;
-		if (!startEl || startEl.closest(".thread, .composer, pre.mermaid")) return;
+		if (!startEl || startEl.closest(".thread, .composer, pre.mermaid, .block-editor")) return;
 		const body = startEl.closest(".block-body");
 		if (!body) return;
 		if (!body.contains(range.endContainer)) range.setEnd(body, body.childNodes.length);
@@ -686,6 +821,9 @@
 		const focused = document.activeElement;
 		const active = focused?.dataset?.composer;
 		const activeSource = focused?.hasAttribute("data-source-editor");
+		const activeBlock = focused?.hasAttribute("data-block-editor");
+		const blockInput = app.querySelector("[data-block-editor]");
+		if (blockInput && state.blockEditor) state.blockEditor.caret = [blockInput.selectionStart, blockInput.selectionEnd, blockInput.selectionDirection];
 		const activeToggle = focused?.dataset?.threadToggle;
 		const caret = active ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : undefined;
 		const inputScroll = active ? [focused.scrollTop, focused.scrollLeft] : undefined;
@@ -701,7 +839,9 @@
 		const doc = state.doc;
 		if (doc) document.title = doc.title;
 		lineTarget = undefined;
+		hoverTarget = undefined;
 		lineAdd.hidden = true;
+		lineEdit.hidden = true;
 		selAdd.hidden = true;
 		const drafts = doc ? doc.threads.filter((t) => t.status === "draft").length : 0;
 
@@ -709,6 +849,7 @@
 		const outdated = [];
 		const blockIds = new Set(doc?.blocks.map((b) => b.id));
 		const stranded = [...state.pending].filter(([, anchor]) => !blockIds.has(anchor.blockId));
+		const strandedEdit = doc && state.blockEditor && !blockIds.has(state.blockEditor.blockId);
 		for (const t of doc?.threads ?? []) {
 			if (t.attachment.status === "outdated") outdated.push(t);
 			else {
@@ -730,8 +871,9 @@
 								class: "comment-rail", "aria-label": "Document comments", tabindex: "0",
 								onscroll: (event) => { if (wideComments.matches) state.railScroll = event.currentTarget.scrollTop; },
 							}),
-							lineAdd, selAdd,
+							lineAdd, lineEdit, selAdd,
 						),
+						strandedEdit && h("section", { class: "outdated" }, h("h2", {}, "Your edit is on text that changed"), blockEditor(true)),
 						stranded.length > 0 &&
 							h(
 								"section",
@@ -758,7 +900,7 @@
 						h("span", { class: "path" }, doc?.path ?? ""),
 						h("span", { class: "spacer" }),
 						state.showLater && h("a", { class: "btn btn-quiet", href: state.showLater, onclick: guardNavigation }, "New document opened · view"),
-						!state.editor && h("button", { class: "btn", onclick: editSource, disabled: !doc || state.loadingSource }, state.loadingSource ? "Loading…" : "Edit"),
+						!state.editor && h("button", { class: "btn", onclick: editSource, disabled: !doc || state.loadingSource || Boolean(state.blockEditor) }, state.loadingSource ? "Loading…" : "Edit"),
 						h("button", { class: "btn btn-quiet", onclick: toggleTheme }, currentTheme() === "dark" ? "Light mode" : "Dark mode"),
 						h("button", { class: "btn btn-primary", disabled: drafts === 0, onclick: sendAll }, `Send all (${drafts})`),
 					),
@@ -766,6 +908,8 @@
 				),
 			),
 		);
+		const blockEditorInput = app.querySelector("[data-block-editor]");
+		if (blockEditorInput) growToFit(blockEditorInput);
 		placeComments();
 		renderStatus();
 		updateSelected();
@@ -773,15 +917,19 @@
 		if (doc?.hasMermaid && !state.editor) renderMermaid();
 		window.scrollTo(0, scroll);
 		const requestedFocus = state.focus;
-		const focusKey = requestedFocus ?? (activeSource ? "source" : active);
+		const focusKey = requestedFocus ?? (activeSource ? "source" : activeBlock ? "block" : active);
 		state.focus = undefined;
+		if (blockEditorInput) {
+			if (focusKey === "block") blockEditorInput.focus({ preventScroll: true });
+			if (state.blockEditor.caret) blockEditorInput.setSelectionRange(...state.blockEditor.caret);
+		}
 		const editorInput = app.querySelector("[data-source-editor]");
 		if (editorInput) {
 			if (focusKey === "source") editorInput.focus({ preventScroll: true });
 			if (state.editor.caret) editorInput.setSelectionRange(...state.editor.caret);
 			if (state.editor.scroll) [editorInput.scrollTop, editorInput.scrollLeft] = state.editor.scroll;
 		}
-		if (focusKey && focusKey !== "source") {
+		if (focusKey && focusKey !== "source" && focusKey !== "block") {
 			const el = app.querySelector(`[data-composer="${CSS.escape(focusKey)}"]`);
 			if (el && !el.closest("[hidden]")) {
 				el.focus({ preventScroll: true });

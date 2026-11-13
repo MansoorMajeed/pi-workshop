@@ -271,6 +271,94 @@ describe("WorkshopServer", () => {
 		expect(readdirSync(dir).sort()).toEqual(files);
 	});
 
+	it("saves one block in place, keeping the rest of the file, its line endings and its mode", async () => {
+		const original = "# Plan\r\n\r\nOld\tpara.\r\n\r\n- a\n- b\n";
+		writeFileSync(docPath, original);
+		chmodSync(docPath, 0o640);
+		const { version } = JSON.parse((await call(server.port, `/api/doc/${docId}/source?${q}`)).body);
+		const payload = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body);
+		expect(payload.version).toBe(version);
+		const para = payload.blocks[1];
+		expect(para.source).toBe("Old\tpara.");
+		// Someone else renames the heading and edits another block after the viewer loaded; the block save still applies.
+		writeFileSync(docPath, original.replace("# Plan", "# Renamed plan").replace("- b", "- b (agent)"));
+		let saved: Promise<Res>;
+		const event = await nextEvent(server.port, `/api/events?doc=${docId}&${q}`, () => {
+			saved = call(server.port, `/api/doc/${docId}/blocks?${q}`, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "New\npara.", version } });
+		});
+		expect(event.name).toBe("changed");
+		expect((await saved!).status).toBe(200);
+		expect(readFileSync(docPath, "utf8")).toBe("# Renamed plan\r\n\r\nNew\r\npara.\r\n\r\n- a\n- b (agent)\n");
+		expect(statSync(docPath).mode & 0o777).toBe(0o640);
+	});
+
+	it("refuses block saves that would lose or damage text, leaving the file untouched", async () => {
+		const original = "# Plan\n\nPara.\n\nNext.\n";
+		writeFileSync(docPath, original);
+		const endpoint = `/api/doc/${docId}/blocks?${q}`;
+		const { version } = JSON.parse((await call(server.port, `/api/doc/${docId}/source?${q}`)).body);
+		const para = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body).blocks[1];
+		const files = readdirSync(dir).sort();
+
+		const broken = await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "```\nunclosed", version } });
+		expect(broken.status).toBe(422);
+		expect(JSON.parse(broken.body).error).toMatch(/code fence/);
+		expect(readFileSync(docPath, "utf8")).toBe(original);
+
+		expect((await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: 1, version } })).status).toBe(400);
+
+		const changed = original.replace("Para.", "Para, edited elsewhere.");
+		writeFileSync(docPath, changed);
+		const stale = await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "Mine.", version } });
+		expect(stale.status).toBe(409);
+		expect(JSON.parse(stale.body).error).toMatch(/changed/i);
+		expect(readFileSync(docPath, "utf8")).toBe(changed);
+
+		// Decoding and re-encoding would replace invalid bytes elsewhere in the file.
+		const latin1 = Buffer.concat([Buffer.from("# Plan\n\nPara.\n\nCaf"), Buffer.from([0xe9]), Buffer.from(".\n")]);
+		writeFileSync(docPath, latin1);
+		const invalid = await call(server.port, endpoint, { method: "POST", body: { original: para.source, occurrence: 0, copies: 1, source: "Mine.", version } });
+		expect(invalid.status).toBe(422);
+		expect(JSON.parse(invalid.body).error).toMatch(/UTF-8/);
+		expect(readFileSync(docPath)).toEqual(latin1);
+		expect(readdirSync(dir).sort()).toEqual(files);
+	});
+
+	it("preserves external edits made while staging a block save", async () => {
+		const { version } = JSON.parse((await call(server.port, `/api/doc/${docId}/source?${q}`)).body);
+		const block = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body).blocks[0];
+		const files = readdirSync(dir).sort();
+		const external = "# External edit during staging\n";
+		const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+		vi.mocked(renameSync).mockClear();
+		vi.mocked(writeFileSync).mockImplementationOnce((file, source, options) => {
+			fs.writeFileSync(file, source, options);
+			fs.writeFileSync(docPath, external);
+		});
+		const saved = await call(server.port, `/api/doc/${docId}/blocks?${q}`, { method: "POST", body: { original: block.source, occurrence: 0, copies: 1, source: "# Mine", version } });
+		expect(saved.status).toBe(409);
+		expect(readFileSync(docPath, "utf8")).toBe(external);
+		expect(readdirSync(dir).sort()).toEqual(files);
+		expect(renameSync).not.toHaveBeenCalled();
+	});
+
+	it("refuses a block save when the file's bytes change during staging, even if they decode to the same text", async () => {
+		writeFileSync(docPath, "# Plan\n\nEdit me.\n\nOutside: \uFFFD\n");
+		const payload = JSON.parse((await call(server.port, `/api/doc/${docId}?${q}`)).body);
+		// U+FFFD and an invalid byte both decode to U+FFFD, so a hash of decoded text can't tell them apart.
+		const swapped = Buffer.concat([Buffer.from("# Plan\n\nEdit me.\n\nOutside: "), Buffer.from([0xe9]), Buffer.from("\n")]);
+		const fs = await vi.importActual<typeof import("node:fs")>("node:fs");
+		vi.mocked(writeFileSync).mockImplementationOnce((file, source, options) => {
+			fs.writeFileSync(file, source, options);
+			fs.writeFileSync(docPath, swapped);
+		});
+		const saved = await call(server.port, `/api/doc/${docId}/blocks?${q}`, {
+			method: "POST", body: { original: "Edit me.", occurrence: 0, copies: 1, source: "Edited.", version: payload.version },
+		});
+		expect(saved.status).toBe(409);
+		expect(readFileSync(docPath)).toEqual(swapped);
+	});
+
 	it("notifies connected viewers after a source save", async () => {
 		const endpoint = `/api/doc/${docId}/source?${q}`;
 		const { version } = JSON.parse((await call(server.port, endpoint)).body);

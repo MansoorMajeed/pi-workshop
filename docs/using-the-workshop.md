@@ -56,9 +56,18 @@ When the agent rewrites the text a thread points at, it tells the thread where t
 
 ## Editing in the browser
 
-Click **Edit** to open the Markdown source. **Save** writes it back to the same file, and **Cancel** returns to the reading view (asking first if you have unsaved changes).
+To change one passage, hover it and click the pencil below the **+** in the margin. Hovering the pencil outlines what will open: a whole list, table or diagram, since those are single blocks. The block turns into its Markdown right where it was. **Save** (or Cmd/Ctrl-Enter) writes it to the file, and **Cancel** (or Esc) closes it, asking first if you changed anything. Clicking elsewhere leaves the box and your draft as they are. You can edit one block at a time.
 
-Editing is turn-based: while you write, the agent reviews without editing, and the other way round. There's no live co-editing or automatic merging. If the file changed after you opened the editor, Save refuses to overwrite it and offers two choices:
+A block save changes only that block's text in the file; every other byte stays as it was, including line endings. The block is found by its text, so changes elsewhere in the file, such as the agent renaming its section or moving it, don't get in the way. The save is refused, and your draft kept, if:
+
+- the block's text changed since you opened it, even just its spacing (the box then moves to the bottom of the page);
+- the file changed and the block's text appears more than once, or did when you opened it, so it's unclear which copy you meant;
+- your edit would change how the text around it reads, such as an unclosed code fence swallowing the rest of the document;
+- the file isn't valid UTF-8.
+
+Click **Edit** in the top bar to open the whole Markdown source. **Save** writes it back to the same file, and **Cancel** returns to the reading view (asking first if you have unsaved changes).
+
+Editing is turn-based: while you write, the agent reviews without editing, and the other way round. There's no live co-editing or automatic merging. If the file changed after you opened the whole-source editor, Save refuses to overwrite it and offers two choices:
 
 - **Overwrite with my version** replaces the other changes with yours.
 - **Reload document** discards your draft and loads the current file.
